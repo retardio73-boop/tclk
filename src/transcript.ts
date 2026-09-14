@@ -206,10 +206,6 @@ function authenticatedFrame(record: TranscriptRecord) {
   return frame !== null && frame.from === record.sender ? frame : null;
 }
 
-function requiresTrustedTime(type: string): boolean {
-  return type === "accept" || type === "lock" || type === "reveal" || type === "refund";
-}
-
 /**
  * Find one contract's authenticated offer/accept pair without rewriting board history.
  * Only an accept that follows its referenced offer in the supplied append order counts.
@@ -246,9 +242,10 @@ export function findContractHandshake(
  * invalid signatures, forged `from` fields, wrong rooms, malformed lines and bad
  * transitions are rejected without changing state.
  *
- * Venue `timestampMs` is not sender-authenticated. By default, frames whose validity depends
- * on a deadline fail closed instead of letting unsigned venue metadata choose money-state.
- * A caller that has independently decided to trust the venue/export clock can opt in with
+ * Venue `timestampMs` is not sender-authenticated. By default, actual deadline checks fail
+ * closed instead of letting unsigned venue metadata choose money-state. Structural guards
+ * still run first, so an invalid frame keeps its structural verdict. A caller that has
+ * independently decided to trust the venue/export clock can opt in with
  * `{ venueTimeTrust: "trusted_by_caller" }`.
  */
 export function foldTranscript(
@@ -327,17 +324,12 @@ export function foldTranscript(
       return;
     }
 
-    if (!venueTimeTrusted && requiresTrustedTime(frame.type)) {
-      steps.push({
-        ...base,
-        type: frame.type,
-        ok: false,
-        reason: "deadline evaluation requires trusted time; record timestampMs is unsigned venue metadata",
-      });
-      return;
-    }
-
-    const result = applyFrame(state, frame, record.timestampMs);
+    const result = applyFrame(
+      state,
+      frame,
+      record.timestampMs,
+      { timeTrusted: venueTimeTrusted },
+    );
     state = result.state;
     steps.push({ ...base, type: frame.type, ok: result.ok, reason: result.reason });
   });
