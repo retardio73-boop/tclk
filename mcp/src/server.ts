@@ -42,6 +42,7 @@ const job = z.object({
   context: z.string().optional(),
 });
 
+// Both a pre-signature and a completed signature are `{ nonce, s }`.
 const presig = z.object({
   nonce: z.string().describe("33-byte SEC1-compressed nonce point, 0x-hex."),
   s: z.string().describe("Scalar, 0x-hex."),
@@ -58,6 +59,7 @@ function toolError(error: unknown): CallToolResult {
   };
 }
 
+/** Run one handler, turning a fail-closed throw into a clear tool error. */
 async function run<T>(fn: () => T | Promise<T>): Promise<CallToolResult> {
   try {
     return ok(await fn());
@@ -235,10 +237,10 @@ export function createServer(options: HandlerOptions = {}): McpServer {
     "tclk_apply_transcript",
     {
       description:
-        "Authenticate and fold complete room records into one contract view. Every " +
-        "signature and frame sender is checked. Venue timestamps are unsigned metadata, " +
-        "so this MCP surface fails closed before any deadline-dependent transition can " +
-        "rely on them. Reports only WHETHER a secret was revealed, never its value.",
+        "Authenticate and fold complete room records into one contract view. Use the " +
+        "`records` returned by tclk_read_room: every signature and frame sender is checked, " +
+        "and each frame uses its own venue timestamp. Reports only WHETHER a secret was " +
+        "revealed, never its value.",
       annotations: READS,
       inputSchema: {
         records: z.array(transcriptRecord).describe("Complete room records, oldest first."),
