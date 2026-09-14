@@ -94,6 +94,10 @@ describe("tools/list", () => {
   });
 
   it("serves input schemas that validate identically to the generated ones", async () => {
+    // The Worker corrects prose that would send a caller to an environment variable it
+    // refuses to read, so `description` strings are allowed to differ. Everything a
+    // client validates arguments against — property names, types, required, enums — must
+    // not, or this server would accept or reject arguments the stdio build does not.
     const withoutProse = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(withoutProse);
       if (value === null || typeof value !== "object") return value;
@@ -119,6 +123,7 @@ describe("tools/list", () => {
       const generated = TOOLS.find((t) => t.name === tool.name)!;
       const served = JSON.stringify(tool.inputSchema);
       if (served !== JSON.stringify(generated.inputSchema)) {
+        // The only licensed reason to differ.
         expect(JSON.stringify(generated.inputSchema)).toContain("TCLK_PAYMENT_KEY");
         expect(served).not.toContain("TCLK_PAYMENT_KEY");
       }
@@ -135,6 +140,7 @@ describe("tools/list", () => {
       .map((t: { name: string }) => t.name);
     expect(changed.sort()).toEqual(["tclk_adaptor_presign", "tclk_post_frame"]);
 
+    // Neither amended description may tell a caller to set a key this build refuses.
     for (const name of changed) {
       const tool = body.result.tools.find((t: { name: string }) => t.name === name);
       expect(tool.description).not.toContain("TCLK_PAYMENT_KEY");
@@ -165,6 +171,8 @@ describe("tools/call round trip", () => {
     expect(accepted.value.secret).toMatch(/^0x[0-9a-f]{64}$/);
     expect(accepted.value.contract).toMatch(/^0x[0-9a-f]{64}$/);
 
+    // The secret verifies against the statement, and folding the transcript reports only
+    // that a secret exists — never its value.
     const verified = await callTool("tclk_verify_secret", {
       lock: "hash",
       statement: accepted.value.statement,
@@ -223,6 +231,8 @@ describe("no custody", () => {
     expect(posted.value.reason).toBe("no signing identity");
     expect(posted.value.canonical).toBe(`${ROOM}|${posted.value.nonce}|${line}`);
 
+    // The hint must say tier 2 is structurally unavailable rather than repeat the stdio
+    // build's "Or set TECHNOCORE_SIGNING_KEY on this server."
     expect(posted.value.hint).toContain("cannot sign for you");
     expect(posted.value.hint).toContain("no way to be given a key");
     expect(posted.value.hint).toContain("stdio build");
@@ -264,6 +274,7 @@ describe("no custody", () => {
     const { calls, fetchLike } = fakeFetch([{ body: "ok 14" }]);
     const line = (await callTool("tclk_make_offer", HASH_OFFER)).value.line;
 
+    // Unsafe number > MAX_SAFE_INTEGER must return RPC error -32602 and never call network
     const unsafeRes = await rpc(
       "tools/call",
       { name: "tclk_post_frame", arguments: { room: ROOM, line, did: PAYER_DID, sig: "x".repeat(86), nonce: 9007199254740992 } },
@@ -273,6 +284,7 @@ describe("no custody", () => {
     expect(unsafeRes.body.error.code).toBe(-32602);
     expect(calls).toHaveLength(0);
 
+    // Malformed string must return RPC error -32602 and never call network
     const malformedRes = await rpc(
       "tools/call",
       { name: "tclk_post_frame", arguments: { room: ROOM, line, did: PAYER_DID, sig: "x".repeat(86), nonce: "123bad" } },
@@ -282,6 +294,7 @@ describe("no custody", () => {
     expect(malformedRes.body.error.code).toBe(-32602);
     expect(calls).toHaveLength(0);
 
+    // >19 digit string must return RPC error -32602 and never call network
     const tooLongRes = await rpc(
       "tools/call",
       { name: "tclk_post_frame", arguments: { room: ROOM, line, did: PAYER_DID, sig: "x".repeat(86), nonce: "12345678901234567890" } },
@@ -302,6 +315,7 @@ describe("no custody", () => {
     expect(refused.value.error).toContain("not available on a hosted server");
     expect(refused.value.hint).toContain("stdio server");
     expect(refused.value.hint).toContain("client-side");
+    // Not the stdio build's "set TCLK_PAYMENT_KEY in this server's environment".
     expect(refused.value.hint).not.toContain("set TCLK_PAYMENT_KEY");
     expect(refused.value.hint).toContain("tclk_adaptor_adapt");
   });
@@ -404,9 +418,11 @@ describe("HTTP and JSON-RPC framing", () => {
     expect((await rpc("tools/call", { name: "tclk_nope", arguments: {} })).body.error.code).toBe(-32602);
     expect((await rpc("tools/call", { name: "tclk_decode", arguments: [] })).body.error.code).toBe(-32602);
     expect((await rpc("tools/call", { name: "tclk_decode", arguments: {} })).body.error.code).toBe(-32602);
+    // A string field given a number: rejected at the boundary, not coerced.
     const wrongType = await rpc("tools/call", { name: "tclk_decode", arguments: { line: 5 } });
     expect(wrongType.body.error.code).toBe(-32602);
     expect(wrongType.body.error.message).toContain("must be a string");
+    // An enum outside its set.
     const badEnum = await rpc("tools/call", {
       name: "tclk_verify_secret",
       arguments: { lock: "sha256", statement: "0x00", secret: "0x00" },
@@ -428,12 +444,17 @@ describe("HTTP and JSON-RPC framing", () => {
 });
 
 describe("no environment variable this build refuses is ever recommended", () => {
+  // The two amended tool descriptions are covered above. These cover the level below
+  // them: a caller who never reads a description still meets the same advice in the
+  // input schema and in the error a fail-closed handler throws. Advice naming
+  // TCLK_PAYMENT_KEY is a dead end here — the Worker refuses that binding outright.
   const POINT_KEY = "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
   it("does not advertise TCLK_PAYMENT_KEY in any advertised input schema", async () => {
     const { body } = await rpc("tools/list");
     const schemas = JSON.stringify(body.result.tools.map((tool: any) => tool.inputSchema));
     expect(schemas).not.toContain("TCLK_PAYMENT_KEY");
+    // The correction is prose-only: the field itself must still be there, and optional.
     const accept = body.result.tools.find((tool: any) => tool.name === "tclk_accept_offer");
     expect(accept.inputSchema.properties.paymentKey).toBeDefined();
     expect(accept.inputSchema.required ?? []).not.toContain("paymentKey");
@@ -464,6 +485,7 @@ describe("no environment variable this build refuses is ever recommended", () =>
     expect(accept.text).toContain("paymentKey");
     expect(accept.text).toContain("holds no payment key");
 
+    // And the field, once supplied, still works — the correction fixed the advice only.
     const ok = await callTool("tclk_accept_offer", {
       offer: offer.value.line,
       from: PAYEE_DID,
